@@ -3,7 +3,7 @@ from telebot import types
 import json
 import os
 
-TOKEN = "7441568488:AAFHHKc78UTnN6LDyh2kVGr8DNsD6wp2OmM"
+TOKEN = "BOT_TOKEN"
 bot = telebot.TeleBot(TOKEN)
 
 DB_FILE = "database.json"
