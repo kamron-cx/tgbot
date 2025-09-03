@@ -1,1 +1,1 @@
-# tgbot
+# kinobot
