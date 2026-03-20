@@ -1,108 +1,247 @@
-import telebot
+İmport telebot
 from telebot import types
-import sqlite3
-import time
+import json
+import os
 
-# 🔑 SOZLAMALAR
 TOKEN = "7961600141:AAHkKdsq1bblalGv1BruRzPaBFkqb8oGnxs"
 bot = telebot.TeleBot(TOKEN)
 
-PRIMARY_ADMIN_ID = 5909932584 
-MOVIE_CHANNEL_ID = -1003897276958  # Rasmda ko'rsatilgan ID raqamingiz
+DB_FILE = "database.json"
+PRIMARY_ADMIN_ID = 5909932584  # Asosiy admin ID
 
-# ===== SQLite Bazani sozlash =====
-def init_db():
-    conn = sqlite3.connect("kino_baza.db", check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS movies 
-                      (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                       file_id TEXT, title TEXT, genre TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS admins (admin_id INTEGER PRIMARY KEY)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
-    # O'zingizning kanalingizni yuzernamesini shu yerga yozing
-    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", ("sub_channel", "@Sizning_Kanalingiz"))
-    conn.commit()
-    return conn, cursor
+# ===== Database yuklash / saqlash =====
+def load_db():
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"videos": [], "users": [], "admins": [PRIMARY_ADMIN_ID], "requests": []}
 
-db_conn, db_cursor = init_db()
-db_cursor.execute("INSERT OR IGNORE INTO admins (admin_id) VALUES (?)", (PRIMARY_ADMIN_ID,))
-db_conn.commit()
+def save_db():
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(db, f, indent=2, ensure_ascii=False)
 
-# ===== Yordamchi funksiyalar =====
-def get_sub_channel():
-    db_cursor.execute("SELECT value FROM settings WHERE key = 'sub_channel'")
-    res = db_cursor.fetchone()
-    return res[0] if res and res[0] is not None else None
+db = load_db()
 
+# ===== Foydali funksiyalar =====
 def is_admin(uid: int) -> bool:
-    db_cursor.execute("SELECT admin_id FROM admins WHERE admin_id = ?", (uid,))
-    return db_cursor.fetchone() is not None
+    return uid in db["admins"]
 
-def check_sub(uid: int):
-    channel = get_sub_channel()
-    if not channel or uid == PRIMARY_ADMIN_ID: return True
-    try:
-        status = bot.get_chat_member(channel, uid).status
-        return status in ['member', 'administrator', 'creator']
-    except Exception as e:
-        print(f"Obuna tekshirishda xato: {e}")
-        return True # Xato bo'lsa bot to'xtab qolmasligi uchun o'tkazib yuboramiz
-
-def main_keyboard(uid):
+def user_keyboard(is_admin_flag: bool) -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(types.KeyboardButton("🎬 Barcha kinolar"), types.KeyboardButton("📂 Janrlar bo'yicha"))
-    kb.add(types.KeyboardButton("📤 Kino so'rash"), types.KeyboardButton("❓ Yordam"))
-    if is_admin(uid):
-        kb.add(types.KeyboardButton("➕ Kino qo'shish"), types.KeyboardButton("📢 Reklama tarqatish"))
-        kb.add(types.KeyboardButton("📊 Statistika"), types.KeyboardButton("⚙️ Sozlamalar"))
+    # Oddiy foydalanuvchi tugmalari
+    kb.add(types.KeyboardButton("📋 Videolar ro‘yxati"))
+    kb.add(types.KeyboardButton("📤 Sorov"))
+    kb.add(types.KeyboardButton("❓ HELP"))
+    # Admin tugmalari
+    if is_admin_flag:
+        kb.add(types.KeyboardButton("➕ Video qo‘shish"), types.KeyboardButton("🗑 Video o‘chirish"))
+        kb.add(types.KeyboardButton("👥 Foydalanuvchilar soni"), types.KeyboardButton("👮 Adminlar ro‘yxati"))
+        kb.add(types.KeyboardButton("➕ Admin qo‘shish"), types.KeyboardButton("➖ Admin o‘chirish"))
+        kb.add(types.KeyboardButton("📋 Videolar ro‘yxati (admin)"))
     return kb
 
-# ===== Admin: Sozlamalar =====
-@bot.message_handler(func=lambda m: m.text == "⚙️ Sozlamalar")
-def channel_settings(message):
-    if not is_admin(message.from_user.id): return
-    current = get_sub_channel()
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("🔄 Kanalni yangilash", callback_data="change_channel"))
-    kb.add(types.InlineKeyboardButton("❌ Obunani o'chirish", callback_data="off_channel"))
-    bot.send_message(message.chat.id, f"⚙️ **Sozlamalar bo'limi**\n\n📢 Hozirgi majburiy kanal: `{current}`", 
-                     parse_mode="Markdown", reply_markup=kb)
+# ===== /start =====
+@bot.message_handler(commands=["start"])
+def start(message: types.Message):
+    uid = message.from_user.id
+    if uid not in db["users"]:
+        db["users"].append(uid)
+        save_db()
+    bot.send_message(uid, "👋 Salom! Xush kelibsiz.", reply_markup=user_keyboard(is_admin(uid)))
 
-@bot.callback_query_handler(func=lambda c: c.data == "change_channel")
-def ask_new_channel(call):
-    bot.send_message(call.message.chat.id, "🛰 **Yangi kanal yuzerini yuboring:**\n(Masalan: @kino_kanali)")
-    bot.register_next_step_handler(call.message, update_channel)
+# ===== HELP =====
+@bot.message_handler(func=lambda m: m.text == "❓ HELP")
+def help_cmd(message: types.Message):
+    bot.send_message(message.chat.id,
+        "ℹ️ Botdan foydalanish bo‘yicha yordam:\n\n"
+        "- Raqam yuboring (1, 2, 3 ...) → video olasiz\n"
+        "- 📋 Videolar ro‘yxati → mavjud videolar ID sini ko‘rasiz\n"
+        "- 📤 Sorov → adminlarga yozishingiz mumkin"
+    )
 
-def update_channel(message):
-    new_ch = message.text.strip()
-    if new_ch.startswith("@"):
-        db_cursor.execute("UPDATE settings SET value = ? WHERE key = 'sub_channel'", (new_ch,))
-        db_conn.commit()
-        bot.send_message(message.chat.id, f"✅ **Muvaffaqiyatli!** Majburiy kanal {new_ch} ga o'zgartirildi.")
-    else:
-        bot.send_message(message.chat.id, "⚠️ **Xatolik!** Kanal yuzeri @ belgisi bilan boshlanishi kerak.")
+# ===== Videolar ro‘yxati (foydalanuvchi) =====
+@bot.message_handler(func=lambda m: m.text == "📋 Videolar ro‘yxati")
+def videos_list(message: types.Message):
+    if not db["videos"]:
+        bot.send_message(message.chat.id, "🚫 Hozircha video mavjud emas.")
+        return
+    lines = ["🎬 Videolar ro‘yxati:"]
+    for v in db["videos"]:
+        lines.append(f"ID: {v['id']}")
+    bot.send_message(message.chat.id, "\n".join(lines))
 
-@bot.callback_query_handler(func=lambda c: c.data == "off_channel")
-def turn_off_sub(call):
-    db_cursor.execute("UPDATE settings SET value = NULL WHERE key = 'sub_channel'")
-    db_conn.commit()
-    bot.edit_message_text("❌ Majburiy obuna o'chirildi.", call.message.chat.id, call.message.message_id)
+# ===== Videolar ro‘yxati (admin) =====
+@bot.message_handler(func=lambda m: m.text == "📋 Videolar ro‘yxati (admin)")
+def videos_list_admin(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    if not db["videos"]:
+        bot.send_message(message.chat.id, "🚫 Hozircha video yo‘q.")
+        return
+    lines = ["🎬 Videolar ro‘yxati (admin):"]
+    for v in db["videos"]:
+        lines.append(f"ID: {v['id']} | {v['title']}")
+    bot.send_message(message.chat.id, "\n".join(lines))
 
-# ===== Obuna tekshiruvi (START buyrug'idan tashqari hamma narsa uchun) =====
-@bot.message_handler(func=lambda m: not check_sub(m.from_user.id) and m.text != "/start")
-def sub_check_handler(message):
-    channel = get_sub_channel()
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("➕ A'zo bo'lish", url=f"https://t.me/{channel[1:]}"))
-    kb.add(types.InlineKeyboardButton("✅ Tasdiqlash", callback_data="check_again"))
-    bot.send_message(message.chat.id, f"🛑 **Diqqat!**\n\nBotdan foydalanish uchun {channel} kanaliga a'zo bo'lishingiz shart!", reply_markup=kb)
+# ===== Video qo‘shish =====
+@bot.message_handler(func=lambda m: m.text == "➕ Video qo‘shish")
+def add_video(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    bot.send_message(message.chat.id, "📹 Menga video yuboring (caption bilan).")
+    bot.register_next_step_handler(message, save_video)
 
-@bot.callback_query_handler(func=lambda c: c.data == "check_again")
-def check_again_btn(call):
-    if check_sub(call.from_user.id):
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        bot.send_message(call.message.chat.id, "🎉 **Rahmat!** Kirish ruxsat etildi.", 
-                         reply_markup=main_keyboard(call.from_user.id))
-    else:
+def save_video(message: types.Message):
+    if not message.video:
+        bot.send_message(message.chat.id, "❗ Faqat video yuboring.")
+        return
+    new_id = len(db["videos"]) + 1
+    db["videos"].append({
+        "id": new_id,
+        "file_id": message.video.file_id,
+        "title": message.caption or f"Video {new_id}"
+    })
+    save_db()
+    bot.send_message(message.chat.id, f"✅ Video saqlandi! ID: {new_id}")
 
+# ===== Video o‘chirish =====
+@bot.message_handler(func=lambda m: m.text == "🗑 Video o‘chirish")
+def delete_video(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    bot.send_message(message.chat.id, "🗑 Qaysi ID dagi videoni o‘chirmoqchisiz?")
+    bot.register_next_step_handler(message, confirm_delete)
+
+def confirm_delete(message: types.Message):
+    try:
+        vid = int(message.text.strip())
+    except ValueError:
+        bot.send_message(message.chat.id, "❗ Raqam yuboring.")
+        return
+    video = next((v for v in db["videos"] if v["id"] == vid), None)
+    if not video:
+        bot.send_message(message.chat.id, "🚫 Bunday video mavjud emas.")
+        return
+    db["videos"].remove(video)
+    save_db()
+    bot.send_message(message.chat.id, f"✅ ID {vid} dagi video o‘chirildi.")
+
+# ===== Video olish (raqam orqali) =====
+@bot.message_handler(func=lambda m: m.text and m.text.isdigit())
+def get_video_by_number(message: types.Message):
+    vid = int(message.text.strip())
+    video = next((v for v in db["videos"] if v["id"] == vid), None)
+    if not video:
+        bot.send_message(message.chat.id, f"🚫 ID {vid} bo‘yicha video mavjud emas.")
+        return
+    bot.send_video(message.chat.id, video["file_id"],
+                   caption=f"🎬 Video ID: {vid}\n📌 Nomi: {video['title']}")
+
+# ===== Sorov =====
+@bot.message_handler(func=lambda m: m.text == "📤 Sorov")
+def request_start(message: types.Message):
+    bot.send_message(message.chat.id, "📩 Xabaringizni yuboring (matn yoki media).")
+    bot.register_next_step_handler(message, save_request)
+
+def save_request(message: types.Message):
+    req = {"user_id": message.from_user.id, "text": message.text or "", "mid": message.message_id}
+    db["requests"].append(req)
+    save_db()
+    bot.send_message(message.chat.id, "✅ Sorovingiz yuborildi. Adminlar tez orada javob berishadi.")
+    # Adminlarga yuboramiz
+    for aid in db["admins"]:
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("✍️ Javob yozish", callback_data=f"reply_{message.from_user.id}"))
+        bot.send_message(aid, f"📥 Yangi sorov!\n👤 User ID: `{message.from_user.id}`\n💬 {req['text']}",
+                         parse_mode="Markdown", reply_markup=kb)
+
+# ===== Admin javobi =====
+@bot.callback_query_handler(func=lambda c: c.data.startswith("reply_"))
+def reply_button(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    target_id = int(call.data.split("_")[1])
+    bot.send_message(call.message.chat.id, f"✍️ Javob matnini yuboring (foydalanuvchi ID: {target_id}).")
+    bot.register_next_step_handler(call.message, lambda m: send_admin_reply(m, target_id))
+
+def send_admin_reply(message: types.Message, target_id: int):
+    try:
+        bot.send_message(target_id, f"📩 *Admin javobi:*\n{message.text}", parse_mode="Markdown")
+        bot.send_message(message.chat.id, "✅ Javob yuborildi.")
+    except:
+        bot.send_message(message.chat.id, "⚠️ Foydalanuvchiga javob yuborib bo‘lmadi (u botni bloklagan bo‘lishi mumkin).")
+
+# ===== Admin qo‘shish =====
+@bot.message_handler(func=lambda m: m.text == "➕ Admin qo‘shish")
+def add_admin(message: types.Message):
+    if message.from_user.id != PRIMARY_ADMIN_ID:
+        return
+    bot.send_message(message.chat.id, "Yangi admin ID sini yuboring:")
+    bot.register_next_step_handler(message, save_admin)
+
+def save_admin(message: types.Message):
+    try:
+        uid = int(message.text.strip())
+        if uid not in db["admins"]:
+            db["admins"].append(uid)
+            save_db()
+            bot.send_message(message.chat.id, f"✅ {uid} admin qilindi.")
+        else:
+            bot.send_message(message.chat.id, "❗ Bu foydalanuvchi allaqachon admin.")
+    except:
+        bot.send_message(message.chat.id, "❗ Noto‘g‘ri ID.")
+
+# ===== Admin o‘chirish =====
+@bot.message_handler(func=lambda m: m.text == "➖ Admin o‘chirish")
+def remove_admin(message: types.Message):
+    if message.from_user.id != PRIMARY_ADMIN_ID:
+        return
+    bot.send_message(message.chat.id, "O‘chiriladigan admin ID sini yuboring:")
+    bot.register_next_step_handler(message, confirm_remove_admin)
+
+def confirm_remove_admin(message: types.Message):
+    try:
+        uid = int(message.text.strip())
+        if uid == PRIMARY_ADMIN_ID:
+            bot.send_message(message.chat.id, "❗ Asosiy adminni o‘chirib bo‘lmaydi.")
+            return
+        if uid in db["admins"]:
+            db["admins"].remove(uid)
+            save_db()
+            bot.send_message(message.chat.id, f"✅ {uid} adminlikdan olindi.")
+        else:
+            bot.send_message(message.chat.id, "🚫 Bunday admin yo‘q.")
+    except:
+        bot.send_message(message.chat.id, "❗ Noto‘g‘ri ID.")
+
+# ===== Foydalanuvchilar soni =====
+@bot.message_handler(func=lambda m: m.text == "👥 Foydalanuvchilar soni")
+def users_count(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    bot.send_message(message.chat.id, f"👥 Jami foydalanuvchilar: {len(db['users'])}")
+
+# ===== Adminlar ro‘yxati =====
+@bot.message_handler(func=lambda m: m.text == "👮 Adminlar ro‘yxati")
+def show_admins(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    if not db["admins"]:
+        bot.send_message(message.chat.id, "🚫 Hozircha adminlar yo‘q.")
+        return
+
+    lines = ["👮 Adminlar ro‘yxati:"]
+    for idx, uid in enumerate(db["admins"], start=1):
+        try:
+            user = bot.get_chat(uid)
+            name = f"@{user.username}" if user.username else user.first_name
+        except:
+            name = "❓ Noma'lum"
+        mark = "⭐ Asosiy admin" if uid == PRIMARY_ADMIN_ID else ""
+        lines.append(f"{idx}. {name} (ID: {uid}) {mark}")
+
+    bot.send_message(message.chat.id, "\n".join(lines))
+
+# ===== Run bot =====
+print("🤖 Bot ishga tushdi...")
+bot.infinity_polling()
