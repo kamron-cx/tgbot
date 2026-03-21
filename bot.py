@@ -1,232 +1,123 @@
-import telebot
-from telebot import types
+import logging
+import asyncio
 import sqlite3
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-TOKEN = "7961600141:AAHkKdsq1bblalGv1BruRzPaBFkqb8oGnxs"
-bot = telebot.TeleBot(TOKEN)
-PRIMARY_ADMIN_ID = 5909932584
+# --- SOZLAMALAR ---
+API_TOKEN = '7961600141:AAHkKdsq1bblalGv1BruRzPaBFkqb8oGnxs'
+CHIEF_ADMIN = 5909932584  # O'zingizning ID raqamingiz
 
-# ===== VERİTABANI BAĞLANTISI =====
-def get_db_connection():
-    conn = sqlite3.connect("bot_database.db", check_same_thread=False)
-    return conn
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher()
 
-# Veritabanı tablolarını oluşturma
+# --- BAZA BILAN ISHLASH ---
 def init_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    # Kullanıcılar
-    cursor.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)")
-    # Videolar
-    cursor.execute("CREATE TABLE IF NOT EXISTS videos (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id TEXT, title TEXT)")
-    # Adminler
-    cursor.execute("CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)")
-    # Zorunlu Kanallar
-    cursor.execute("CREATE TABLE IF NOT EXISTS channels (channel_id TEXT PRIMARY KEY, channel_name TEXT)")
-    
-    # Ana admini ekle
-    cursor.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (PRIMARY_ADMIN_ID,))
+    conn = sqlite3.connect('database.sqlite')
+    cur = conn.cursor()
+    cur.execute('''CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY)''')
+    cur.execute('''CREATE TABLE IF NOT EXISTS admins (id INTEGER PRIMARY KEY)''')
+    cur.execute('''CREATE TABLE IF NOT EXISTS videos (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id TEXT, caption TEXT)''')
+    cur.execute('''CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, link TEXT)''')
     conn.commit()
     conn.close()
 
 init_db()
 
-# ===== YARDIMCI FONKSİYONLAR =====
-def is_admin(uid):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM admins WHERE user_id = ?", (uid,))
-    result = cursor.fetchone()
+# --- ADMIN TEKSHIRUVI ---
+async def is_admin(user_id):
+    if user_id == CHIEF_ADMIN: return True
+    conn = sqlite3.connect('database.sqlite')
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM admins WHERE id=?", (user_id,))
+    res = cur.fetchone()
     conn.close()
-    return result is not None
+    return res is not None
 
-def check_subscription(user_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT channel_id FROM channels")
-    channels = cursor.fetchall()
+# --- MAJBURIY OBUNA ---
+async def check_sub(user_id):
+    conn = sqlite3.connect('database.sqlite')
+    cur = conn.cursor()
+    cur.execute("SELECT id, link FROM channels")
+    channels = cur.fetchall()
     conn.close()
     
-    not_joined = []
-    for (cid,) in channels:
+    for ch_id, link in channels:
         try:
-            status = bot.get_chat_member(cid, user_id).status
-            if status not in ["creator", "administrator", "member"]:
-                not_joined.append(cid)
-        except:
-            continue
-    return not_joined
+            member = await bot.get_chat_member(chat_id=ch_id, user_id=user_id)
+            if member.status in ['left', 'kicked']: return False, link
+        except: continue
+    return True, None
 
-def main_keyboard(uid):
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("📋 Videolar ro‘yxati", "📤 Sorov", "❓ HELP")
-    
-    if is_admin(uid):
-        kb.add("➕ Video qo‘shish", "🗑 Video o‘chirish")
-        kb.add("👥 Foydalanuvchilar soni", "👮 Adminlar ro‘yxati")
-        kb.add("📢 Reklama tarqatish", "📢 Kanal sozlamalari")
-        if uid == PRIMARY_ADMIN_ID:
-            kb.add("➕ Admin qo‘shish", "➖ Admin o‘chirish")
-    return kb
-
-# ===== KOMUTLAR VE MESAJLAR =====
-
-@bot.message_handler(commands=["start"])
-def start(message):
-    uid = message.from_user.id
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
+# --- FOYDALANUVCHI QISMI ---
+@dp.message(Command("start"))
+async def start_cmd(message: types.Message):
+    # Foydalanuvchini bazaga qo'shish
+    conn = sqlite3.connect('database.sqlite')
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO users VALUES (?)", (message.from_user.id,))
     conn.commit()
     conn.close()
-    bot.send_message(uid, "👋 Salom! Botga xush kelibsiz.", reply_markup=main_keyboard(uid))
 
-# --- REKLAMA TARQATISH ---
-@bot.message_handler(func=lambda m: m.text == "📢 Reklama tarqatish" and is_admin(m.from_user.id))
-def start_broadcast(message):
-    msg = bot.send_message(message.chat.id, "📢 Reklama xabarini yuboring (Rasm, video, matn bo'lishi mumkin):")
-    bot.register_next_step_handler(msg, do_broadcast)
+    is_ok, link = await check_sub(message.from_user.id)
+    if not is_ok:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Kanalga a'zo bo'lish", url=link)]])
+        return await message.answer("Botdan foydalanish uchun kanalga a'zo bo'ling!", reply_markup=kb)
 
-def do_broadcast(message):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users")
-    users = cursor.fetchall()
+    kb = types.ReplyKeyboardMarkup(keyboard=[
+        [types.KeyboardButton(text="🆘 Help"), types.KeyboardButton(text="📩 So'rov yuborish")]
+    ], resize_keyboard=True)
+    
+    if await is_admin(message.from_user.id):
+        kb.keyboard.append([types.KeyboardButton(text="👨‍💻 Admin Panel")])
+        
+    await message.answer("Xush kelibsiz! Video ID raqamini yuboring.", reply_markup=kb)
+
+@dp.message(F.text == "🆘 Help")
+async def help_fn(message: types.Message):
+    await message.answer("Botdan foydalanish uchun video ID raqamini yuboring. Masalan: 12\nAdmin bilan bog'lanish uchun 'So'rov yuborish' tugmasini bosing.")
+
+# Video qidirish (Faqat raqam yuborsa)
+@dp.message(F.text.isdigit())
+async def get_video(message: types.Message):
+    conn = sqlite3.connect('database.sqlite')
+    cur = conn.cursor()
+    cur.execute("SELECT file_id, caption FROM videos WHERE id=?", (message.text,))
+    res = cur.fetchone()
     conn.close()
-    
-    count = 0
-    for (uid,) in users:
-        try:
-            bot.copy_message(uid, message.chat.id, message.message_id)
-            count += 1
-        except:
-            continue
-    bot.send_message(message.chat.id, f"✅ Reklama {count} kishiga muvaffaqiyatli yuborildi.")
-
-# --- VİDEO İŞLEMLERİ ---
-@bot.message_handler(func=lambda m: m.text == "➕ Video qo‘shish" and is_admin(m.from_user.id))
-def add_video_start(message):
-    bot.send_message(message.chat.id, "📹 Videoni yuboring (Tavsifi bilan):")
-    bot.register_next_step_handler(message, save_video_to_sql)
-
-def save_video_to_sql(message):
-    if not message.video:
-        bot.send_message(message.chat.id, "❗ Faqat video yuboring.")
-        return
-    title = message.caption or "Nomsiz video"
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO videos (file_id, title) VALUES (?, ?)", (message.video.file_id, title))
-    new_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    bot.send_message(message.chat.id, f"✅ Video saqlandi! ID: {new_id}")
-
-@bot.message_handler(func=lambda m: m.text == "📋 Videolar ro‘yxati")
-def list_videos(message):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, title FROM videos")
-    rows = cursor.fetchall()
-    conn.close()
-    
-    if not rows:
-        bot.send_message(message.chat.id, "🚫 Hozircha video mavjud emas.")
-        return
-    
-    text = "🎬 *Videolar ro'yxati:*\n\n"
-    for r in rows:
-        text += f"🆔 {r[0]} | {r[1]}\n"
-    bot.send_message(message.chat.id, text, parse_mode="Markdown")
-
-# --- VİDEO ÇAĞIRMA (Zorunlu Abone Kontrolü) ---
-@bot.message_handler(func=lambda m: m.text and m.text.isdigit())
-def handle_video_request(message):
-    uid = message.from_user.id
-    not_joined = check_subscription(uid)
-    
-    if not_joined:
-        kb = types.InlineKeyboardMarkup()
-        for cid in not_joined:
-            try:
-                chat = bot.get_chat(cid)
-                url = f"https://t.me/{chat.username}" if chat.username else "https://t.me/telegram"
-                kb.add(types.InlineKeyboardButton(f"➕ {chat.title}", url=url))
-            except: continue
-        kb.add(types.InlineKeyboardButton("✅ Tekshirish", callback_data=f"check_{message.text}"))
-        bot.send_message(uid, "❌ Botdan foydalanish uchun kanallarga a'zo bo'ling:", reply_markup=kb)
-        return
-
-    send_video_by_id(message.chat.id, message.text)
-
-def send_video_by_id(chat_id, vid_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT file_id, title FROM videos WHERE id = ?", (vid_id,))
-    res = cursor.fetchone()
-    conn.close()
-    
     if res:
-        bot.send_video(chat_id, res[0], caption=f"🎬 ID: {vid_id}\n📌 {res[1]}")
+        await message.answer_video(video=res[0], caption=res[1])
     else:
-        bot.send_message(chat_id, "🚫 Bunday ID bilan video topilmadi.")
+        await message.answer("Bunday ID dagi video topilmadi.")
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("check_"))
-def check_callback(call):
-    vid_id = call.data.split("_")[1]
-    not_joined = check_subscription(call.from_user.id)
-    if not not_joined:
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        send_video_by_id(call.message.chat.id, vid_id)
-    else:
-        bot.answer_callback_query(call.id, "❌ Hali a'zo emassiz!", show_alert=True)
+# --- ADMIN FUNKSIYALARI ---
+@dp.message(F.text == "👨‍💻 Admin Panel")
+async def admin_menu(message: types.Message):
+    if not await is_admin(message.from_user.id): return
+    kb = types.ReplyKeyboardMarkup(keyboard=[
+        [types.KeyboardButton(text="➕ Video qo'shish"), types.KeyboardButton(text="🗑 Video o'chirish")],
+        [types.KeyboardButton(text="📊 Statistika"), types.KeyboardButton(text="📢 Reklama")],
+        [types.KeyboardButton(text="➕ Admin qo'shish"), types.KeyboardButton(text="➕ Kanal qo'shish")]
+    ], resize_keyboard=True)
+    await message.answer("Admin paneliga xush kelibsiz", reply_markup=kb)
 
-# --- KANAL AYARLARI ---
-@bot.message_handler(func=lambda m: m.text == "📢 Kanal sozlamalari" and is_admin(m.from_user.id))
-def channel_menu(message):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT channel_id, channel_name FROM channels")
-    rows = cursor.fetchall()
-    conn.close()
-    
-    text = "📢 *Zorunlu Kanallar:*\n\n"
-    for r in rows:
-        text += f"🔸 {r[1]} (`{r[0]}`)\n"
-    
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("➕ Kanal qo'shish", callback_data="add_ch"))
-    kb.add(types.InlineKeyboardButton("🗑 Kanal o'chirish", callback_data="del_ch"))
-    bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=kb)
-
-@bot.callback_query_handler(func=lambda c: c.data == "add_ch")
-def add_ch_call(call):
-    msg = bot.send_message(call.message.chat.id, "Kanal ID sini yuboring (Masalan: -100...):")
-    bot.register_next_step_handler(msg, save_channel_sql)
-
-def save_channel_sql(message):
-    try:
-        cid = message.text.strip()
-        chat = bot.get_chat(cid)
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO channels (channel_id, channel_name) VALUES (?, ?)", (cid, chat.title))
+# Video qo'shish logikasi (Sodda variant)
+@dp.message(F.video)
+async def save_vid(message: types.Message):
+    if await is_admin(message.from_user.id):
+        conn = sqlite3.connect('database.sqlite')
+        cur = conn.cursor()
+        cur.execute("INSERT INTO videos (file_id, caption) VALUES (?, ?)", (message.video.file_id, message.caption))
+        v_id = cur.lastrowid
         conn.commit()
         conn.close()
-        bot.send_message(message.chat.id, f"✅ {chat.title} qo'shildi.")
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Xato: {e}")
+        await message.answer(f"Video saqlandi! ID: {v_id}")
 
-# --- ADMIN İSTATİSTİK ---
-@bot.message_handler(func=lambda m: m.text == "👥 Foydalanuvchilar soni" and is_admin(m.from_user.id))
-def count_users(message):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM users")
-    count = cursor.fetchone()[0]
-    conn.close()
-    bot.send_message(message.chat.id, f"👥 Bot foydalanuvchilari: {count} ta")
+# --- ISHGA TUSHIRISH ---
+async def main():
+    await dp.start_polling(bot)
 
-# ===== BOTU BAŞLAT =====
-print("🤖 SQLite Bot ishga tushdi...")
-bot.infinity_polling()
+if __name__ == "__main__":
+    asyncio.run(main())
