@@ -51,17 +51,15 @@ def check_sub(uid):
 
 def get_kb(uid):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row("📋 Videolar ro‘yxati")
-    kb.row("📤 Sorov", "❓ HELP")
-    
+    kb.row("Videolar ruyxati")
+    kb.row("Sorov", "HELP")
     if is_admin(uid):
-        kb.row("➕ Video qo‘shish", "🗑 Video o‘chirish")
-        kb.row("👥 Foydalanuvchilar soni", "👮 Adminlar ro‘yxati")
-        kb.row("📢 Reklama tarqatish") # Reklama tugmasi
-    
+        kb.row("Video qushish", "Video uchirish")
+        kb.row("Foydalanuvchilar soni", "Adminlar ruyxati")
+        kb.row("Reklama tarqatish")
     if uid == PRIMARY_ADMIN_ID:
-        kb.row("📢 Kanallar", "➕ Kanal qo‘shish", "➖ Kanal o‘chirish")
-        kb.row("➕ Admin qo‘shish", "➖ Admin o‘chirish")
+        kb.row("Kanallar", "Kanal qushish", "Kanal uchirish")
+        kb.row("Admin qushish", "Admin uchirish")
     return kb
 
 # ===== KOMANDALAR =====
@@ -69,25 +67,22 @@ def get_kb(uid):
 def start(message):
     uid = message.from_user.id
     db_query('INSERT OR IGNORE INTO users (user_id) VALUES (?)', (uid,), commit=True)
-    bot.send_message(uid, "👋 Xush kelibsiz!", reply_markup=get_kb(uid))
+    bot.send_message(uid, "Salom! Bot ishga tushdi.", reply_markup=get_kb(uid))
 
 # ===== REKLAMA TARQATISH =====
-@bot.message_handler(func=lambda m: m.text == "📢 Reklama tarqatish")
+@bot.message_handler(func=lambda m: m.text == "Reklama tarqatish")
 def start_broadcast(message):
     if not is_admin(message.from_user.id): return
-    msg = bot.send_message(message.chat.id, "📢 Reklama xabarini yuboring (Matn, rasm yoki video).\nBekor qilish uchun /cancel deb yozing.")
+    msg = bot.send_message(message.chat.id, "Reklama xabarini yuboring. Bekor qilish uchun /cancel yuboring.")
     bot.register_next_step_handler(msg, send_broadcast)
 
 def send_broadcast(message):
     if message.text == "/cancel":
-        bot.send_message(message.chat.id, "❌ Reklama bekor qilindi.")
+        bot.send_message(message.chat.id, "Reklama bekor qilindi.")
         return
-
     users = db_query('SELECT user_id FROM users', fetchall=True)
-    count = 0
-    error_count = 0
-    status_msg = bot.send_message(message.chat.id, f"⏳ Tarqatish boshlandi...")
-
+    count, error_count = 0, 0
+    status_msg = bot.send_message(message.chat.id, "Tarqatish boshlandi...")
     for (uid,) in users:
         try:
             bot.copy_message(uid, message.chat.id, message.message_id)
@@ -95,20 +90,21 @@ def send_broadcast(message):
         except:
             error_count += 1
             continue
-    
-    bot.send_message(message.chat.id, f"✅ Reklama yakunlandi!\n\n👤 Yetkazildi: {count}\n🚫 Bloklaganlar: {error_count}")
+    bot.send_message(message.chat.id, f"Yakunlandi!\nYetkazildi: {count}\nBloklaganlar: {error_count}")
 
-# ===== VIDEO VA KANAL BOSHQARUVI (SQLITE) =====
-@bot.message_handler(func=lambda m: m.text == "➕ Video qo‘shish")
+# ===== VIDEO VA KANAL BOSHQARUVI =====
+@bot.message_handler(func=lambda m: m.text == "Video qushish")
 def add_v(message):
     if not is_admin(message.from_user.id): return
-    bot.send_message(message.chat.id, "📹 Videoni yuboring:")
+    bot.send_message(message.chat.id, "Videoni yuboring:")
     bot.register_next_step_handler(message, save_v)
 
 def save_v(message):
-    if not message.video: return
+    if not message.video:
+        bot.send_message(message.chat.id, "Xato: Bu video emas.")
+        return
     db_query('INSERT INTO videos (file_id, title) VALUES (?, ?)', (message.video.file_id, message.caption or "Video"), commit=True)
-    bot.send_message(message.chat.id, "✅ Video saqlandi.")
+    bot.send_message(message.chat.id, "Video saqlandi.")
 
 @bot.message_handler(func=lambda m: m.text and m.text.isdigit())
 def send_v(message):
@@ -117,14 +113,40 @@ def send_v(message):
         kb = types.InlineKeyboardMarkup()
         for (ch,) in channels:
             url = f"https://t.me/{ch.replace('@','')}"
-            kb.add(types.InlineKeyboardButton("Obuna bo'lish ➕", url=url))
-        bot.send_message(message.chat.id, "❌ Avval kanallarga obuna bo'ling!", reply_markup=kb)
+            kb.add(types.InlineKeyboardButton("Obuna bulish", url=url))
+        bot.send_message(message.chat.id, "Botdan foydalanish uchun kanallarga obuna buling:", reply_markup=kb)
         return
     res = db_query('SELECT file_id, title FROM videos WHERE id=?', (message.text,), fetchone=True)
     if res:
-        bot.send_video(message.chat.id, res[0], caption=f"🎬 {res[1]}\nID: {message.text}")
+        bot.send_video(message.chat.id, res[0], caption=f"Nomi: {res[1]}\nID: {message.text}")
+    else:
+        bot.send_message(message.chat.id, "Bunday ID dagi video topilmadi.")
 
-# (Boshqa admin funksiyalari kodingizda boridek qoladi)
+# ===== ADMIN VA KANAL BOSHQARUVI QOLGAN QISMI =====
+@bot.message_handler(func=lambda m: m.text == "Foydalanuvchilar soni")
+def stats(message):
+    if is_admin(message.from_user.id):
+        count = db_query('SELECT COUNT(*) FROM users', fetchone=True)[0]
+        bot.send_message(message.chat.id, f"Jami foydalanuvchilar: {count}")
 
-print("🤖 Bot ishlamoqda...")
+@bot.message_handler(func=lambda m: m.text == "Kanal qushish")
+def add_ch_start(message):
+    if message.from_user.id == PRIMARY_ADMIN_ID:
+        bot.send_message(message.chat.id, "Kanal @username sini yuboring:")
+        bot.register_next_step_handler(message, save_ch)
+
+def save_ch(message):
+    db_query('INSERT OR IGNORE INTO channels (ch_id) VALUES (?)', (message.text.strip(),), commit=True)
+    bot.send_message(message.chat.id, "Kanal saqlandi.")
+
+@bot.message_handler(func=lambda m: m.text == "Kanallar")
+def list_ch(message):
+    if message.from_user.id == PRIMARY_ADMIN_ID:
+        chs = db_query('SELECT ch_id FROM channels', fetchall=True)
+        text = "Majburiy kanallar:\n" + "\n".join([c[0] for c in chs]) if chs else "Ro'yxat bo'sh"
+        bot.send_message(message.chat.id, text)
+
+# RUN
+print("Bot ishga tushdi...")
 bot.infinity_polling()
+
