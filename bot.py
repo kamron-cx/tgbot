@@ -10,7 +10,7 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from aiogram.exceptions import TelegramForbiddenError
 
 # --- ASOSIY SOZLAMALAR ---
-TOKEN = "8101321937:AAHwCdUofG33-yxdrYcCzoBLGM2uAfAUDPg"
+TOKEN = "7961600141:AAHkKdsq1bblalGv1BruRzPaBFkqb8oGnxs"
 SUPER_ADMIN = 8753357449
 MOVIE_CHANNEL_ID = -1003870500673  # Kinolar saqlanadigan kanal ID-sini shu yerga yozing
 
